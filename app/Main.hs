@@ -93,6 +93,13 @@ data Statement = Assign String Expr
                | Pass                    
       deriving (Eq, Show)
 
+repl :: String -> IO ()
+repl i  | i == "q" = putStrLn "oh lol im out"
+        | otherwise = putStrLn "other"
+
 
 main :: IO ()
-main = do putStrLn "hi"
+main = do
+        file <- readFile "data"
+        putStrLn file
+        repl input
