@@ -1,6 +1,6 @@
-{-# Language OverloadedStrings,NoMonomorphismRestriction, FlexibleContexts #-} 
+{-# Language OverloadedStrings, FlexibleContexts #-} 
+
 --overloaded strings for ease of use
--- nomorphism.. for the deriving show in Instruction data
 -- Flexible Contents for throwError in loopup k t
 
 module Main where
@@ -95,24 +95,24 @@ data Statement = Assign String Expr
       deriving (Eq, Show)
 
 set :: (Name, Val) -> Run ()
-set (s,i) = state $ (\t -> ( (), ([], (Map.insert s i $ getEnv t), Fr, []))) 
+set (s,i) = state $ (\t -> ( (), ([], (Map.insert s i $ getE t), Fr, []))) 
 
 exec :: Statement -> Instruction -> Run ()
 exec (Assign var e) i  = do
-    current <- gets $ getEnv
+    current <- gets $ getE
     case runEval current $ eval e of
         Right val -> set (var, val)
         Left e ->  throwError e
 
 exec (If exp sa sb) i = do
-    current <- gets $ getEnv
+    current <- gets $ getE
     case runEval current $ eval exp of
         Right (B True) -> exec sa i
         Right (B False) -> exec sb i
         Left e -> throwError e
 
 exec (Print e) i = do
-    current <- gets $ getEnv
+    current <- gets $ getE
     case runEval current $ eval e of
         Right val -> liftIO $ System.print val
         Left e -> throwError e
@@ -125,17 +125,29 @@ type Breakpoint = Expr  -- alias that thingy
 type PState = ([Stage], Env, Instruction, [Breakpoint])
 
 -- state functions
-getEnv :: PState -> Env
-getEnv (_,env,_,_) = env
+getE :: PState -> Env
+getE (_,env,_,_) = env
+
+getI :: PState -> Instruction
+getI (_,_,instruction,_) = instruction
 
 setInst :: Instruction -> PState -> PState
 setInst i (h,e,_,b) = (h,e,i,b)
 
-data Instruction =  Fr | Ba | Go  deriving (Read, Show)
+data Instruction = Fr | Ba | Go  deriving (Read, Show)
+
+getNextInst :: Instruction -> Run ()
+getNextInst Go = return ()
+getNextInst i = do
+    inp <- liftIO $ Reader.readMaybe <$> getLine
+    case inp of
+        Just inst -> modify $ setInst inst
+        Nothing -> (liftIO $ putStrLn eMsg) >> getNextInst i
 
 type Run a = StateT PState (ExceptT String IO) a    -- monad in which a program is run
 runRun p = runExceptT $ runStateT p Map.empty
 
+-- useful for linking together a program
 type Program = Writer Statement ()
 
 instance Semigroup Statement where
@@ -161,31 +173,26 @@ run p = do
 eMsg :: String
 eMsg = "Error, invalid input. Valid inputs are: Fr, Ba, Go, Br <Expr>"
 
-getNextInst :: Statement -> Run ()
-getNextInst s = do
-    inp <- liftIO $ Reader.readMaybe <$> getLine
-    case inp of
-        Just inst -> modify $ setInst inst
-        Nothing -> (liftIO $ putStrLn eMsg) >> getNextInst s
-
 interpret :: Statement -> Run ()
 interpret (Seq a b) = do
     interpret a
     interpret b
 
 interpret (While ex stat) = do
-    current <- gets $ getEnv
+    current <- gets $ getE
+    cInst <- gets $ getI
     liftIO $ putStrLn $ show (While ex stat)
-    getNextInst (While ex stat)
+    getNextInst cInst
     case runEval current $ eval ex of
         Right (B True) -> interpret stat >> interpret (While ex stat)
         Right (B False) -> return ()
         Left e -> liftIO $ System.print e
 
 interpret (If ex a b) = do
-    current <- gets $ getEnv
+    current <- gets $ getE
+    cInst <- gets $ getI
     liftIO $ putStrLn $ show (If ex a b)
-    getNextInst (If ex a b)
+    getNextInst cInst
     case runEval current $ eval ex of
         Right (B True) -> interpret a
         Right (B False) -> interpret b
@@ -193,19 +200,17 @@ interpret (If ex a b) = do
 
 interpret (Try a b) = do
     liftIO $ putStrLn $ show (Try a b)
-    getNextInst (Try a b)
+    cInst <- gets $ getI
+    getNextInst cInst
     (interpret a) `catchError` (\e -> do 
                                         (liftIO $ putStrLn e)
                                         interpret b)
 
 interpret s = do
     liftIO $ putStrLn $ show s
-    inp <- liftIO $ Reader.readMaybe <$> getLine
-    case inp of
-        Just inst -> exec s inst
-        Nothing -> do
-                    liftIO $ putStrLn eMsg
-                    interpret s
+    cInst <- gets $ getI
+    getNextInst cInst
+    exec s cInst
 
 -- dsl for building a Program
 infixl 1 .=
