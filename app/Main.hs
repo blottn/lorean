@@ -1,4 +1,4 @@
-{-# Language OverloadedStrings, MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-} 
+{-# Language OverloadedStrings, FlexibleContexts, MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-} 
 module Main where
 
 import Lib
@@ -32,7 +32,7 @@ type Env = Map.Map Name Val
 
 lookup k t = case Map.lookup k t of
                Just x -> return x
-               Nothing -> fail ("Unknown variable "++k)
+               Nothing -> throwError ("Unknown variable "++k)
 
 type Eval a = ReaderT Env (ExceptT String Identity) a 
 
@@ -68,8 +68,7 @@ eval (Div e0 e1) = do evali div e0 e1
 eval (And e0 e1) = do evalb (&&) e0 e1
 eval (Or e0 e1) = do evalb (||) e0 e1
 
-eval (Not e0  ) = do evalb (const not) e0 (Const (B True)) 
-                       where not2 a _ = not a -- hack, hack
+eval (Not e0  ) = do evalb (const not) (Const (B True)) e0
 
 eval (Eq e0 e1) = do evalib (==) e0 e1
 eval (Gt e0 e1) = do evalib (>) e0 e1
@@ -99,33 +98,21 @@ exec (Assign var e) i  = do
     current <- gets $ getEnv
     case runEval current $ eval e of
         Right val -> set (var, val)
-        Left e ->  liftIO $ System.print e
+        Left e ->  throwError e
 
 exec (If exp sa sb) i = do
     current <- gets $ getEnv
     case runEval current $ eval exp of
         Right (B True) -> exec sa i
         Right (B False) -> exec sb i
-        Left e -> liftIO $ System.print e
-
-exec (While exp s) i = do
-    current <- gets $ getEnv
-    case runEval current $ eval exp of
-        Right (B val) -> exec s i
-        Left e -> liftIO $ System.print e
-
-exec (Try t c) i = catchError (exec t i) (\e ->exec c i)
+        Left e -> throwError e
 
 exec (Print e) i = do
     current <- gets $ getEnv
     case runEval current $ eval e of
         Right val -> liftIO $ System.print val
-        Left e -> liftIO $ System.print e
+        Left e -> throwError e
 
-exec (Seq a b) _ = do
-    interpret a
-    interpret b
-    
 exec Pass _ = return ()
 
 
@@ -133,9 +120,12 @@ type Stage = (Env, Statement)
 type Breakpoint = Expr  -- alias that thingy
 type PState = ([Stage], Env, Instruction, [Breakpoint])
 
--- state projection functions
+-- state functions
 getEnv :: PState -> Env
 getEnv (_,env,_,_) = env
+
+setInst :: Instruction -> PState -> PState
+setInst i (h,e,_,b) = (h,e,i,b)
 
 data Instruction = Fr | Ba | Go deriving (Read, Show)
 type Run a = StateT PState (ExceptT String IO) a    -- monad in which a program is run
@@ -163,6 +153,16 @@ run p = do
         Right ( (), env ) -> return ()
         Left e -> System.print e
 
+eMsg :: String
+eMsg = "Error, invalid input. Valid inputs are: Fr, Ba, Go, Br <Expr>"
+
+getNextInst :: Statement -> Run ()
+getNextInst s = do
+    inp <- liftIO $ Reader.readMaybe <$> getLine
+    case inp of
+        Just inst -> modify $ setInst inst
+        Nothing -> (liftIO $ putStrLn eMsg) >> getNextInst s
+
 interpret :: Statement -> Run ()
 interpret (Seq a b) = do
     interpret a
@@ -170,18 +170,37 @@ interpret (Seq a b) = do
 
 interpret (While ex stat) = do
     current <- gets $ getEnv
-    liftIO $ putStrLn $ show stat
+    liftIO $ putStrLn $ show (While ex stat)
+    getNextInst (While ex stat)
     case runEval current $ eval ex of
         Right (B True) -> interpret stat >> interpret (While ex stat)
         Right (B False) -> return ()
         Left e -> liftIO $ System.print e
 
+interpret (If ex a b) = do
+    current <- gets $ getEnv
+    liftIO $ putStrLn $ show (If ex a b)
+    getNextInst (If ex a b)
+    case runEval current $ eval ex of
+        Right (B True) -> interpret a
+        Right (B False) -> interpret b
+        Left e -> liftIO $ System.print e
+
+interpret (Try a b) = do
+    liftIO $ putStrLn $ show (Try a b)
+    getNextInst (Try a b)
+    (interpret a) `catchError` (\e -> do 
+                                        (liftIO $ putStrLn e)
+                                        interpret b)
+
 interpret s = do
-    inp <- liftIO $ Reader.readMaybe <$> getLine
     liftIO $ putStrLn $ show s
+    inp <- liftIO $ Reader.readMaybe <$> getLine
     case inp of
         Just inst -> exec s inst
-        Nothing -> liftIO $ putStrLn "oops"
+        Nothing -> do
+                    liftIO $ putStrLn eMsg
+                    interpret s
 
 -- dsl for building a Program
 infixl 1 .=
@@ -194,6 +213,9 @@ iif e y n = tell $ If e (build y) (build n)
 while :: Expr -> Program -> Program
 while e loop = tell $ While e (build loop)
 
+try :: Program -> Program -> Program
+try p1 p2 = tell $ Try (build p1) (build p2)
+
 print :: Expr -> Program
 print e = tell $ Print e
 
@@ -202,9 +224,12 @@ main = do
         run $ build $ do 
             print $ (Const $ I 1)
             "x" .=  (Const $ I 1)
-            while   (Lt (Var "x") (Const $ I 6)) $ do
+            try ("x" .= (Div (Var "w") (Const $ I 1)))(print $ (Const $ I 100))
+            iif (Gt (Var "x") (Const $ I 6)) (do
                 "x" .=  (Add (Var "x") (Const $ I 1))
-                "x" .=  (Add (Var "x") (Const $ I 1))
+                "x" .=  (Add (Var "x") (Const $ I 1)))
+                (do
+                    print $ ((Const $ I 33)))
             "x" .=  (Add (Var "x") (Var "x"))
             print $ Var "x"
 
