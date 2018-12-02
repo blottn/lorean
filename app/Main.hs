@@ -150,18 +150,21 @@ build :: Program -> Statement
 build p = snd . runIdentity $ runWriterT p
 
 -- actual interpreter part
-run :: Program -> IO()
+
+run :: Statement -> IO()
 run p = do
     liftIO $ putStrLn "asdasdasd"
     res <- liftIO $ Reader.readMaybe <$> getLine
     case res  of
-        Just inst -> runWith inst p >> run p
+        Just inst -> do
+                        runWith inst p
+                        run p
         Nothing -> liftIO $ putStrLn "oh no"
 
 
-runWith :: Instruction -> Program -> IO ()
+runWith :: Instruction -> Statement -> IO ()
 runWith inst p = do
-    result <- runExceptT $ (runStateT $ exec (build p) inst) Map.empty
+    result <- runExceptT $ (runStateT $ exec p inst) Map.empty
     case result of
         Right ( (), env ) -> return ()
         Left e -> System.print e
@@ -182,7 +185,7 @@ print e = tell $ Print e
 
 main :: IO ()
 main = do
-        run $ do 
+        run $ build $ do 
             print $ (Const $ I 1)
             "x" .=  (Const $ I 1)
             "x" .=  (Add (Var "x") (Var "x"))
