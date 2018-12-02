@@ -8,6 +8,8 @@ import Prelude hiding (lookup, print)
 import qualified Data.Map as Map
 import Data.Maybe
 
+-- for reading the user input 
+import qualified Text.Read as Reader
 import qualified System.IO as System
 
 import Control.Monad.Identity
@@ -15,7 +17,6 @@ import Control.Monad.Except
 import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
-
 data Val = I Int | B Bool
            deriving (Eq, Show)
 
@@ -28,8 +29,6 @@ data Expr = Const Val
 
 type Name = String 
 type Env = Map.Map Name Val
-type PEnv = ([Statement], Env)
-type Part = (Statement, Env)
 
 lookup k t = case Map.lookup k t of
                Just x -> return x
@@ -92,43 +91,50 @@ data Statement = Assign String Expr
                | Pass                    
       deriving (Eq, Show)
 
-type Run a = StateT Env (ExceptT String IO) a
-runRun p = runExceptT $ runStateT p Map.empty
-
 set :: (Name, Val) -> Run ()
 set (s,i) = state $ (\t -> ((), Map.insert s i t)) 
 
-exec :: Statement -> Run ()
-exec (Assign var e) = do
+exec :: Statement -> Instruction -> Run ()
+exec (Assign var e) i  = do
     current <- get
     case runEval current $ eval e of
         Right val -> set (var, val)
         Left e ->  liftIO $ System.print e
 
-exec (If exp sa sb) = do
+exec (If exp sa sb) i = do
     current <- get
     case runEval current $ eval exp of
-        Right (B val) -> exec sa
+        Right (B val) -> exec sa i
         Left e -> liftIO $ System.print e
 
-exec (While exp s) = do
+exec (While exp s) i = do
     current <- get
     case runEval current $ eval exp of
-        Right (B val) -> exec s
+        Right (B val) -> exec s i
         Left e -> liftIO $ System.print e
 
-exec (Try t c) = catchError (exec t) (\e ->exec c)
-exec (Print e) = do
+exec (Try t c) i = catchError (exec t i) (\e ->exec c i)
+
+exec (Print e) i = do
     current <- get
     case runEval current $ eval e of
         Right val -> liftIO $ System.print val
         Left e -> liftIO $ System.print e
 
-exec (Seq a b) = do
-    exec a
-    exec b
+exec (Seq a b) i = do
+    case i of
+        Fr -> exec a i
     
-exec Pass = return ()
+exec Pass _ = return ()
+
+type Stage = (Env, [Statement])
+type Breakpoint = Expr  -- alias that thingy
+type PState = ([Stage], Env)
+
+data Instruction = Fr | Ba | Go deriving (Read, Show)
+type Run a = StateT Env (ExceptT String IO) a    -- monad in which a program is run
+runRun p = runExceptT $ runStateT p Map.empty
+
 
 type Program = Writer Statement ()
 
@@ -143,9 +149,19 @@ instance Monoid Statement where
 build :: Program -> Statement
 build p = snd . runIdentity $ runWriterT p
 
+-- actual interpreter part
 run :: Program -> IO()
 run p = do
-    result <- runExceptT $ (runStateT $ exec $ snd $ runIdentity $ (runWriterT p)) Map.empty
+    liftIO $ putStrLn "asdasdasd"
+    res <- liftIO $ Reader.readMaybe <$> getLine
+    case res  of
+        Just inst -> runWith inst p >> run p
+        Nothing -> liftIO $ putStrLn "oh no"
+
+
+runWith :: Instruction -> Program -> IO ()
+runWith inst p = do
+    result <- runExceptT $ (runStateT $ exec (build p) inst) Map.empty
     case result of
         Right ( (), env ) -> return ()
         Left e -> System.print e
@@ -167,6 +183,7 @@ print e = tell $ Print e
 main :: IO ()
 main = do
         run $ do 
+            print $ (Const $ I 1)
             "x" .=  (Const $ I 1)
             "x" .=  (Add (Var "x") (Var "x"))
             "x" .=  (Add (Var "x") (Var "x"))
