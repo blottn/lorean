@@ -92,23 +92,24 @@ data Statement = Assign String Expr
       deriving (Eq, Show)
 
 set :: (Name, Val) -> Run ()
-set (s,i) = state $ (\t -> ((), Map.insert s i t)) 
+set (s,i) = state $ (\t -> ( (), ([], (Map.insert s i $ getEnv t), Fr, []))) 
 
 exec :: Statement -> Instruction -> Run ()
 exec (Assign var e) i  = do
-    current <- get
+    current <- gets $ getEnv
     case runEval current $ eval e of
         Right val -> set (var, val)
         Left e ->  liftIO $ System.print e
 
 exec (If exp sa sb) i = do
-    current <- get
+    current <- gets $ getEnv
     case runEval current $ eval exp of
-        Right (B val) -> exec sa i
+        Right (B True) -> exec sa i
+        Right (B False) -> exec sb i
         Left e -> liftIO $ System.print e
 
 exec (While exp s) i = do
-    current <- get
+    current <- gets $ getEnv
     case runEval current $ eval exp of
         Right (B val) -> exec s i
         Left e -> liftIO $ System.print e
@@ -116,25 +117,29 @@ exec (While exp s) i = do
 exec (Try t c) i = catchError (exec t i) (\e ->exec c i)
 
 exec (Print e) i = do
-    current <- get
+    current <- gets $ getEnv
     case runEval current $ eval e of
         Right val -> liftIO $ System.print val
         Left e -> liftIO $ System.print e
 
-exec (Seq a b) i = do
-    case i of
-        Fr -> exec a i
+exec (Seq a b) _ = do
+    interpret a
+    interpret b
     
 exec Pass _ = return ()
 
-type Stage = (Env, [Statement])
+
+type Stage = (Env, Statement)
 type Breakpoint = Expr  -- alias that thingy
-type PState = ([Stage], Env)
+type PState = ([Stage], Env, Instruction, [Breakpoint])
+
+-- state projection functions
+getEnv :: PState -> Env
+getEnv (_,env,_,_) = env
 
 data Instruction = Fr | Ba | Go deriving (Read, Show)
-type Run a = StateT Env (ExceptT String IO) a    -- monad in which a program is run
+type Run a = StateT PState (ExceptT String IO) a    -- monad in which a program is run
 runRun p = runExceptT $ runStateT p Map.empty
-
 
 type Program = Writer Statement ()
 
@@ -150,24 +155,33 @@ build :: Program -> Statement
 build p = snd . runIdentity $ runWriterT p
 
 -- actual interpreter part
-
+-- initial entry point
 run :: Statement -> IO()
 run p = do
-    liftIO $ putStrLn "asdasdasd"
-    res <- liftIO $ Reader.readMaybe <$> getLine
-    case res  of
-        Just inst -> do
-                        runWith inst p
-                        run p
-        Nothing -> liftIO $ putStrLn "oh no"
-
-
-runWith :: Instruction -> Statement -> IO ()
-runWith inst p = do
-    result <- runExceptT $ (runStateT $ exec p inst) Map.empty
+    result <- runExceptT $ (runStateT $ interpret p) ([], Map.empty, Fr,[])
     case result of
         Right ( (), env ) -> return ()
         Left e -> System.print e
+
+interpret :: Statement -> Run ()
+interpret (Seq a b) = do
+    interpret a
+    interpret b
+
+interpret (While ex stat) = do
+    current <- gets $ getEnv
+    liftIO $ putStrLn $ show stat
+    case runEval current $ eval ex of
+        Right (B True) -> interpret stat >> interpret (While ex stat)
+        Right (B False) -> return ()
+        Left e -> liftIO $ System.print e
+
+interpret s = do
+    inp <- liftIO $ Reader.readMaybe <$> getLine
+    liftIO $ putStrLn $ show s
+    case inp of
+        Just inst -> exec s inst
+        Nothing -> liftIO $ putStrLn "oops"
 
 -- dsl for building a Program
 infixl 1 .=
@@ -188,7 +202,9 @@ main = do
         run $ build $ do 
             print $ (Const $ I 1)
             "x" .=  (Const $ I 1)
-            "x" .=  (Add (Var "x") (Var "x"))
+            while   (Lt (Var "x") (Const $ I 6)) $ do
+                "x" .=  (Add (Var "x") (Const $ I 1))
+                "x" .=  (Add (Var "x") (Const $ I 1))
             "x" .=  (Add (Var "x") (Var "x"))
             print $ Var "x"
 
