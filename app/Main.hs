@@ -11,6 +11,7 @@ import Prelude hiding (lookup, print)
 
 import qualified Data.Map as Map
 import Data.Maybe
+import Data.Either
 
 -- for reading the user input 
 import qualified Text.Read as Reader
@@ -22,14 +23,14 @@ import Control.Monad.Reader
 import Control.Monad.State
 import Control.Monad.Writer
 data Val = I Int | B Bool
-           deriving (Eq, Show)
+           deriving (Eq, Show, Read)
 
 data Expr = Const Val
      | Add Expr Expr | Sub Expr Expr  | Mul Expr Expr | Div Expr Expr
      | And Expr Expr | Or Expr Expr | Not Expr 
      | Eq Expr Expr | Gt Expr Expr | Lt Expr Expr
      | Var String
-   deriving (Eq, Show)
+   deriving (Eq, Show, Read)
 
 type Name = String 
 type Env = Map.Map Name Val
@@ -95,7 +96,9 @@ data Statement = Assign String Expr
       deriving (Eq, Show)
 
 set :: (Name, Val) -> Run ()
-set (s,i) = state $ (\t -> ( (), ([], (Map.insert s i $ getE t), Fr, []))) 
+set (s,i) = do
+        modify $ assign (s, i)
+    -- $ (\t -> ( (), (h, (Map.insert s i $ getE t), i, b))) 
 
 exec :: Statement -> Instruction -> Run ()
 exec (Assign var e) i  = do
@@ -131,18 +134,49 @@ getE (_,env,_,_) = env
 getI :: PState -> Instruction
 getI (_,_,instruction,_) = instruction
 
+getB :: PState -> [Breakpoint]
+getB (_,_,_,bs) = bs
+
 setInst :: Instruction -> PState -> PState
 setInst i (h,e,_,b) = (h,e,i,b)
 
-data Instruction = Fr | Ba | Go  deriving (Read, Show)
+assign :: (Name, Val) -> PState -> PState
+assign  (k, v) (h,e,i,b) = (h, Map.insert k v $ e, i, b)
+
+addBreak :: Breakpoint -> PState -> PState
+addBreak bp (h,e,i,[]) = (h,e,i,[bp])
+addBreak bp (h,e,i,bs) = (h,e,i,bp:bs)
+
+data Instruction = Br Expr | Fr | Ba | Go  deriving (Read, Show)
+
+valJoiner :: Bool -> Val -> Bool
+valJoiner True (B _) = True
+valJoiner _ (B True) = True
+valJoiner _ _ = False
 
 getNextInst :: Instruction -> Run ()
-getNextInst Go = return ()
+getNextInst Go = do
+    bps <- gets $ getB
+    env <- gets $ getE
+    case foldl valJoiner False $ rights $ map ((runEval env) . eval) bps of
+        True -> getNextInst Fr
+        _ -> return ()
+
 getNextInst i = do
+    state <- get
+    liftIO $ putStrLn ( "State > " ++ (show state))
     inp <- liftIO $ Reader.readMaybe <$> getLine
     case inp of
+        Just (Br b) -> (modify $ addBreak b) >> getNextInst i
         Just inst -> modify $ setInst inst
         Nothing -> (liftIO $ putStrLn eMsg) >> getNextInst i
+
+getBreak :: Run ()
+getBreak = do
+    b <- liftIO $ Reader.readMaybe <$> getLine
+    case b of
+        Just br -> modify $ addBreak br
+        Nothing -> return ()
 
 type Run a = StateT PState (ExceptT String IO) a    -- monad in which a program is run
 runRun p = runExceptT $ runStateT p Map.empty
