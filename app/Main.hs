@@ -16,7 +16,7 @@ import Data.Either
 -- for reading the user input 
 import qualified Text.Read as Reader
 import qualified System.IO as System
-
+import qualified System.Environment as Environment
 import Control.Monad.Identity
 import Control.Monad.Except
 import Control.Monad.Reader
@@ -96,10 +96,9 @@ data Statement = Assign String Expr
       deriving (Eq, Show)
 
 set :: (Name, Val) -> Run ()
-set (s,i) = do
-        modify $ assign (s, i)
-    -- $ (\t -> ( (), (h, (Map.insert s i $ getE t), i, b))) 
+set (s,i) = modify $ assign (s, i)
 
+-- primitive statements
 exec :: Statement -> Instruction -> Run ()
 exec (Assign var e) i  = do
     current <- gets $ getE
@@ -121,7 +120,6 @@ exec (Print e) i = do
         Left e -> throwError e
 
 exec Pass _ = return ()
-
 
 type Stage = (Env, Statement)
 type Breakpoint = Expr  -- alias that thingy
@@ -146,6 +144,18 @@ assign  (k, v) (h,e,i,b) = (h, Map.insert k v $ e, i, b)
 addBreak :: Breakpoint -> PState -> PState
 addBreak bp (h,e,i,[]) = (h,e,i,[bp])
 addBreak bp (h,e,i,bs) = (h,e,i,bp:bs)
+
+addStage :: Stage -> PState -> PState
+addStage stage (hs,e,i,b) = (stage:hs, e, i, b)
+
+rewind :: PState -> PState
+rewind ((h:[]),e,i,b) = (h:[],e,i,b)
+rewind ((h:hs),e,i,b) = (hs, e, i, b)
+
+logState :: Statement -> Run ()
+logState s = do
+    e <- gets $ getE
+    modify $ addStage (e,s)
 
 data Instruction = Br Expr | Fr | Ba | Go  deriving (Read, Show)
 
@@ -207,46 +217,113 @@ run p = do
 eMsg :: String
 eMsg = "Error, invalid input. Valid inputs are: Fr, Ba, Go, Br <Expr>"
 
+reverseState :: Run()
+reverseState = modify $ rewind
+
+getStatement :: PState -> Statement
+getStatement (xs,_,_,_) = snd $ head xs
+
 interpret :: Statement -> Run ()
 interpret (Seq a b) = do
-    interpret a
-    interpret b
+    cInst <- gets $ getI
+    case cInst of
+        Ba -> do 
+                reverseState
+                nex <- gets $ getStatement
+                interpret nex
+        _ -> do 
+                interpret a
+                interpret b
+        
 
 interpret (While ex stat) = do
     current <- gets $ getE
     cInst <- gets $ getI
+    case cInst of
+        Ba -> return ()
+        Fr -> logState (While ex stat)
+        Go -> logState (While ex stat)
+        Br _ -> logState (While ex stat)
+
     liftIO $ putStrLn $ show (While ex stat)
     getNextInst cInst
-    case runEval current $ eval ex of
-        Right (B True) -> interpret stat >> interpret (While ex stat)
-        Right (B False) -> return ()
-        Left e -> liftIO $ System.print e
+
+    nInst <- gets $ getI
+    case nInst of
+        Ba -> do
+                reverseState
+                nex <- gets $ getStatement
+                interpret nex
+        _ -> case runEval current $ eval ex of
+                Right (B True) -> interpret stat >> interpret (While ex stat)
+                Right (B False) -> return ()
+                Left e -> liftIO $ System.print e
 
 interpret (If ex a b) = do
     current <- gets $ getE
     cInst <- gets $ getI
+    case cInst of
+        Ba -> return ()
+        Fr -> logState (If ex a b)
+        Go -> logState (If ex a b)
+        Br _ -> logState (If ex a b)
+
     liftIO $ putStrLn $ show (If ex a b)
     getNextInst cInst
-    case runEval current $ eval ex of
-        Right (B True) -> interpret a
-        Right (B False) -> interpret b
-        Left e -> liftIO $ System.print e
+
+    nInst <- gets $ getI
+    case nInst of
+        Ba -> do
+                reverseState
+                nex <- gets $ getStatement
+                interpret nex
+        _ -> case runEval current $ eval ex of
+                Right (B True) -> interpret a
+                Right (B False) -> interpret b
+                Left e -> liftIO $ System.print e
 
 interpret (Try a b) = do
-    liftIO $ putStrLn $ show (Try a b)
     cInst <- gets $ getI
+    case cInst of
+        Ba -> return ()
+        Fr -> logState (Try a b)
+        Go -> logState (Try a b)
+        Br _ -> logState (Try a b)
+
+    liftIO $ putStrLn $ show (Try a b)
     getNextInst cInst
-    (interpret a) `catchError` (\e -> do 
+
+
+    nInst <- gets $ getI
+    case nInst of
+        Ba -> do
+                reverseState
+                nex <- gets $ getStatement
+                interpret nex
+        _ -> (interpret a) `catchError` (\e -> do 
                                         (liftIO $ putStrLn e)
                                         interpret b)
 
 interpret s = do
     liftIO $ putStrLn $ show s
     cInst <- gets $ getI
-    getNextInst cInst
-    exec s cInst
+    case cInst of
+        Ba -> return ()
+        Fr -> logState s
+        Go -> logState s
+        Br _ -> logState s
 
--- dsl for building a Program
+    getNextInst cInst
+    
+    nInst <- gets $ getI
+    case nInst of
+        Ba -> do
+                reverseState
+                nex <- gets $ getStatement
+                interpret nex
+        _ -> exec s cInst
+
+-- dsl for building a Program handy for debug
 infixl 1 .=
 (.=) :: String -> Expr -> Program
 var .= val = tell $ Assign var val
@@ -263,8 +340,19 @@ try p1 p2 = tell $ Try (build p1) (build p2)
 print :: Expr -> Program
 print e = tell $ Print e
 
+--readP (x:xs) = readFile x
+
 main :: IO ()
 main = do
+ --       args <- Environment.getArgs
+ --       p <- readP args
+ --       case Reader.readMaybe $ p of
+  --          Just d -> putStrLn "success"
+  --          Nothing -> putStrLn "compilation error"
+      --  pdata <- Reader.readMaybe $ readFile $ f
+--        case pdata of
+ --           Just d -> build pdata
+  --          Nothing -> putStrLn "invalid file/ no data"
         run $ build $ do 
             print $ (Const $ I 1)
             "x" .=  (Const $ I 1)

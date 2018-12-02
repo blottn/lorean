@@ -1,3 +1,25 @@
-hello
-my
-dudes
+(Seq (Assign "x" (Const (I 1))) 
+
+(Seq 
+
+(Print (Var "x"))
+
+(Seq
+
+(Try 
+
+(
+Assign "x" (Div (Var "w") (Const (I 1)))
+)
+
+(Print (Const (I 100)))
+)
+
+(Seq
+
+(If (Gt (Var "x") (Const $ I 6))
+(Assign "x" (Add (Var "x") (Const (I 1))))
+(Assign "x" (Add (Var "x") (Const (I 1)))))
+
+(Seq (Assign "x" (Add (Var "x") (Var "x")))
+(Print (Var "x")))))))
