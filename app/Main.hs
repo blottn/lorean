@@ -1,4 +1,8 @@
-{-# Language OverloadedStrings, FlexibleContexts, MultiParamTypeClasses, TypeSynonymInstances, FlexibleInstances #-} 
+{-# Language OverloadedStrings,NoMonomorphismRestriction, FlexibleContexts #-} 
+--overloaded strings for ease of use
+-- nomorphism.. for the deriving show in Instruction data
+-- Flexible Contents for throwError in loopup k t
+
 module Main where
 
 import Lib
@@ -127,7 +131,8 @@ getEnv (_,env,_,_) = env
 setInst :: Instruction -> PState -> PState
 setInst i (h,e,_,b) = (h,e,i,b)
 
-data Instruction = Fr | Ba | Go deriving (Read, Show)
+data Instruction =  Fr | Ba | Go  deriving (Read, Show)
+
 type Run a = StateT PState (ExceptT String IO) a    -- monad in which a program is run
 runRun p = runExceptT $ runStateT p Map.empty
 
